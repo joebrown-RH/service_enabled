@@ -1,5 +1,15 @@
 ---
-audit_report_dir: "{{ sox_report_dir | default(playbook_dir ~ '/../reports') }}"
+# Defined here rather than only in inventory/group_vars/, because AAP uses the
+# Controller inventory and never reads this project's group_vars -- so the
+# fallback has to live somewhere the role itself can see.
+#
+# The repo-relative default only makes sense when writing to the machine
+# running the play; any other report host gets an absolute path.
+audit_report_dir: >-
+  {{ sox_report_dir | default(
+       (playbook_dir ~ '/../reports')
+       if (sox_report_host | default('localhost')) == 'localhost'
+       else '/var/lib/sox_audit/reports', true) }}
 audit_report_basename: sox_service_audit
 
 # Also drop a stable `*_latest.*` copy so a dashboard or a scheduled fetch can
