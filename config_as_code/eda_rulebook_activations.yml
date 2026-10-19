@@ -1,0 +1,28 @@
+---
+controller_projects:
+  - name: "{{ _project }}"
+    organization: "{{ _org }}"
+    scm_type: git
+    scm_url: "{{ _project_url }}"
+    scm_branch: main
+    scm_update_on_launch: true
+    state: present
+
+eda_projects:
+  - name: "{{ _project }}"
+    organization: "{{ _org }}"
+    url: "{{ _project_url }}"
+    state: present
+
+eda_rulebook_activations:
+  - name: SOX Configuration Drift
+    description: >-
+      Receives drift events from the SOX - Drift Sensor job and launches the
+      SOX - Drift Response job template for the host that moved.
+    project: "{{ _project }}"
+    organization: "{{ _org }}"
+    rulebook: config_drift_webhook.yml
+    decision_environment: "{{ _eda_decision_environment }}"
+    eda_credentials: "{{ _eda_controller_credential }}"
+    enabled: true
+    state: present

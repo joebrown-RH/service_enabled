@@ -1,0 +1,29 @@
+---
+# SOX evidence collection: which services start automatically on each in-scope
+# Linux host, and can the logs those services produce actually be relied on?
+#
+#   ansible-playbook playbooks/sox_service_audit.yml
+#   ansible-playbook playbooks/sox_service_audit.yml -e sox_hosts=local_demo
+
+- name: Collect SOX evidence from in-scope Linux hosts
+  hosts: "{{ sox_hosts | default('sox_targets') }}"
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: service_audit
+
+- name: Render the SOX evidence report
+  hosts: "{{ sox_hosts | default('sox_targets') }}"
+  gather_facts: false
+  become: false
+  run_once: true
+
+  tasks:
+    # Delegated rather than run in a `hosts: localhost` play so that an AAP job
+    # template using a limit still produces a report.
+    - name: Build the HTML and CSV report on the control node
+      ansible.builtin.include_role:
+        name: audit_report
+        apply:
+          delegate_to: localhost

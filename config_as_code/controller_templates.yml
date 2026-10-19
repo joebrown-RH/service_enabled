@@ -1,0 +1,75 @@
+---
+controller_templates:
+  - name: "SOX - Collect Service & Logging Evidence"
+    description: >-
+      Inventories every enabled systemd service on the in-scope Linux hosts,
+      assesses whether each one's output is actually captured, and renders the
+      HTML and CSV evidence pack.
+    job_type: run
+    organization: "{{ _org }}"
+    inventory: "{{ _sox_inventory }}"
+    project: "{{ _project }}"
+    playbook: playbooks/sox_service_audit.yml
+    execution_environment: "{{ _ee }}"
+    credentials:
+      - "{{ _machine_credential }}"
+    become_enabled: true
+    ask_limit_on_launch: true
+    ask_variables_on_launch: true
+
+  - name: "SOX - Capture Config Baseline"
+    description: >-
+      Records the approved configuration and enabled-service set for each host.
+      Run after build and after every authorised change.
+    job_type: run
+    organization: "{{ _org }}"
+    inventory: "{{ _sox_inventory }}"
+    project: "{{ _project }}"
+    playbook: playbooks/drift_baseline.yml
+    execution_environment: "{{ _ee }}"
+    credentials:
+      - "{{ _machine_credential }}"
+    become_enabled: true
+    ask_limit_on_launch: true
+
+  - name: "SOX - Drift Sensor"
+    description: >-
+      Compares each host against its baseline and posts an event to Event-Driven
+      Ansible for any host that has moved. Schedule this every few minutes.
+    job_type: run
+    organization: "{{ _org }}"
+    inventory: "{{ _sox_inventory }}"
+    project: "{{ _project }}"
+    playbook: playbooks/drift_sensor.yml
+    execution_environment: "{{ _ee }}"
+    credentials:
+      - "{{ _machine_credential }}"
+    become_enabled: true
+    ask_limit_on_launch: true
+    ask_variables_on_launch: true
+    extra_vars:
+      # Point this at the config_drift_webhook.yml activation's service.
+      eda_webhook_url: ""
+
+  - name: "SOX - Drift Response"
+    description: >-
+      Launched by Event-Driven Ansible when a host drifts. Gathers the evidence
+      for the change and records it in the drift register. Non-destructive.
+    job_type: run
+    organization: "{{ _org }}"
+    inventory: "{{ _sox_inventory }}"
+    project: "{{ _project }}"
+    playbook: playbooks/drift_response.yml
+    execution_environment: "{{ _ee }}"
+    credentials:
+      - "{{ _machine_credential }}"
+    become_enabled: true
+    ask_limit_on_launch: true
+    ask_variables_on_launch: true
+
+controller_schedules:
+  - name: "SOX - Drift Sensor every 10 minutes"
+    unified_job_template: "SOX - Drift Sensor"
+    organization: "{{ _org }}"
+    rrule: "DTSTART:20260101T000000Z RRULE:FREQ=MINUTELY;INTERVAL=10"
+    enabled: false

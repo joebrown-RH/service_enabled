@@ -1,0 +1,68 @@
+---
+# The "watch me break it" demo path. Run this with ansible-rulebook directly on
+# the RHEL host you are demonstrating against:
+#
+#   ansible-rulebook --rulebook rulebooks/config_drift_local.yml \
+#                    --inventory inventory/hosts.yml -v
+#
+# Then, in another terminal on that host:
+#   sudo sed -i 's/^#MaxAuthTries.*/MaxAuthTries 10/' /etc/ssh/sshd_config
+#   sudo systemctl stop firewalld
+#
+# Both sources watch the machine the rulebook process runs on. In AAP the
+# activation runs inside a decision environment container, so it would watch the
+# container rather than your fleet -- use config_drift_webhook.yml there.
+
+- name: Linux configuration drift (local sensors)
+  hosts: all
+  sources:
+    - ansible.eda.file_watch:
+        path: /etc/ssh
+        recursive: true
+        ignore_regexes:
+          - '.*\.swp$'
+          - '.*~$'
+          - '.*\.tmp$'
+          - '.*/\.[^/]*$'
+
+    - ansible.eda.journald:
+        match: SYSLOG_IDENTIFIER=systemd
+
+  rules:
+    # Editors write a file several times per save, so collapse the burst.
+    - name: A watched configuration file changed
+      condition: event.change is defined and event.change in ["created", "modified", "deleted"]
+      throttle:
+        once_within: 30 seconds
+        group_by_attributes:
+          - event.src_path
+      action:
+        run_playbook:
+          name: playbooks/drift_response.yml
+          extra_vars:
+            drift_host: localhost
+            drift_trigger: config_file
+            drift_detail: "{{ event.src_path }} was {{ event.change }}"
+            drift_files:
+              - "{{ event.src_path }}"
+
+    - name: A monitored service changed state
+      condition: >-
+        event.journald.unit is defined and
+        event.journald.unit in ["sshd.service", "auditd.service", "rsyslog.service",
+                                "firewalld.service", "chronyd.service"] and
+        (event.journald.message is search("Stopped") or
+         event.journald.message is search("Started"))
+      throttle:
+        once_within: 30 seconds
+        group_by_attributes:
+          - event.journald.unit
+      action:
+        run_playbook:
+          name: playbooks/drift_response.yml
+          extra_vars:
+            drift_host: localhost
+            drift_trigger: service_state
+            drift_detail: "{{ event.journald.message }}"
+            drift_services_added:
+              - "{{ event.journald.unit }}"

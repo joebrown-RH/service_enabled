@@ -1,0 +1,144 @@
+---
+- name: Confirm the host is systemd-managed
+  ansible.builtin.assert:
+    that: ansible_facts.service_mgr == 'systemd'
+    fail_msg: "{{ inventory_hostname }} is not systemd-managed; this audit only supports systemd hosts."
+    quiet: true
+
+- name: Determine which services are enabled
+  ansible.builtin.include_tasks: enabled_units.yml
+
+# noqa command-instead-of-module: reading manager properties, not changing state.
+- name: Read the manager's default output sinks # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl show --property=DefaultStandardOutput --property=DefaultStandardError
+  changed_when: false
+  register: service_audit_manager_defaults
+
+- name: Collect unit properties for every enabled service in one call
+  ansible.builtin.command:
+    argv: >-
+      {{ ['systemctl', 'show'] + service_audit_enabled_units
+         + (service_audit_unit_properties | map('regex_replace', '^', '--property=') | list) }}
+  changed_when: false
+  register: service_audit_show_output
+  when: service_audit_enabled_units | length > 0
+
+# `systemctl show` prints the requested properties in order, one block per unit,
+# so the flat line list divides exactly by the property count. If that ever stops
+# holding, fail loudly rather than silently mis-pairing keys and values.
+- name: Verify the property output aligns with the units queried
+  ansible.builtin.assert:
+    that: >-
+      (service_audit_show_output.stdout_lines | reject('equalto', '') | list | length)
+      == (service_audit_enabled_units | length) * (service_audit_unit_properties | length)
+    fail_msg: >-
+      systemctl returned {{ service_audit_show_output.stdout_lines | reject('equalto', '') | list | length }}
+      property lines for {{ service_audit_enabled_units | length }} units; expected
+      {{ (service_audit_enabled_units | length) * (service_audit_unit_properties | length) }}.
+    quiet: true
+  when: service_audit_enabled_units | length > 0
+
+- name: Parse unit properties into records
+  ansible.builtin.set_fact:
+    service_audit_unit_records: >-
+      {{ service_audit_show_output.stdout_lines | reject('equalto', '')
+         | map('split', '=', 1)
+         | batch(service_audit_unit_properties | length)
+         | map('community.general.dict')
+         | list }}
+  when: service_audit_enabled_units | length > 0
+
+- name: Resolve the manager default sinks
+  ansible.builtin.set_fact:
+    service_audit_default_stdout: >-
+      {{ service_audit_manager_defaults.stdout | regex_search('DefaultStandardOutput=(\S+)', '\1') | first | default('journal', true) }}
+    service_audit_default_stderr: >-
+      {{ service_audit_manager_defaults.stdout | regex_search('DefaultStandardError=(\S+)', '\1') | first | default('inherit', true) }}
+
+- name: Classify the logging capability of each enabled service
+  ansible.builtin.set_fact:
+    service_audit_services: "{{ service_audit_services | default([]) + [_record] }}"
+  vars:
+    # `inherit` on stdout falls back to the manager default; on stderr it mirrors stdout.
+    _out: "{{ item.StandardOutput if item.StandardOutput != 'inherit' else service_audit_default_stdout }}"
+    _err: >-
+      {{ item.StandardError if item.StandardError not in ['inherit', '']
+         else (service_audit_default_stderr if item.StandardError == '' else _out) }}
+    _to_file: "{{ _out is match('^(file|append|truncate):') }}"
+    _out_discarded: "{{ _out in service_audit_discard_sinks }}"
+    _err_discarded: "{{ _err in service_audit_discard_sinks }}"
+    _out_durable: "{{ _out in service_audit_durable_sinks }}"
+    _destination: >-
+      {{ 'file' if _to_file
+         else ('none' if _out_discarded
+         else (_out | split('+') | first)) }}
+    _status: >-
+      {{ 'critical' if _out_discarded
+         else ('warning' if (_to_file or _err_discarded or not _out_durable)
+         else 'good') }}
+    _note: >-
+      {{ 'stdout and stderr are discarded (StandardOutput=null) - this service produces no log evidence'
+         if _out_discarded
+         else ('writes to a file outside the journal (' ~ _out ~ ') - confirm rotation and central collection'
+         if _to_file
+         else ('stderr is discarded (StandardError=null); only stdout is captured'
+         if _err_discarded
+         else ('output goes to ' ~ _out ~ ', which is not a durable log sink'
+         if not _out_durable
+         else 'captured by ' ~ _destination))) }}
+    _record:
+      name: "{{ item.Id }}"
+      description: "{{ item.Description }}"
+      unit_file_state: "{{ item.UnitFileState }}"
+      active_state: "{{ item.ActiveState }}"
+      sub_state: "{{ item.SubState }}"
+      run_as: "{{ item.User | default('root', true) | default('root', true) }}"
+      unit_path: "{{ item.FragmentPath }}"
+      std_output: "{{ item.StandardOutput }}"
+      std_error: "{{ item.StandardError }}"
+      effective_output: "{{ _out }}"
+      effective_error: "{{ _err }}"
+      syslog_identifier: "{{ item.SyslogIdentifier | default('', true) }}"
+      syslog_facility: "{{ item.SyslogFacility | default('', true) }}"
+      log_destination: "{{ _destination }}"
+      log_status: "{{ _status }}"
+      log_note: "{{ _note }}"
+      audit_relevant: "{{ item.Id in service_audit_expected_services }}"
+  loop: "{{ service_audit_unit_records | default([]) }}"
+  loop_control:
+    label: "{{ item.Id }}"
+
+- name: Ensure the service list exists even on a host with no enabled services
+  ansible.builtin.set_fact:
+    service_audit_services: "{{ service_audit_services | default([]) }}"
+
+- name: Collect the host logging posture
+  ansible.builtin.include_tasks: logging_posture.yml
+
+# noqa var-naming: sox_audit is the role's published output, read out of
+# hostvars by the audit_report role, so it is deliberately not role-prefixed.
+- name: Assemble the audit record for this host # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    sox_audit:
+      hostname: "{{ inventory_hostname }}"
+      fqdn: "{{ ansible_facts.fqdn | default(inventory_hostname) }}"
+      distribution: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+      kernel: "{{ ansible_facts.kernel }}"
+      collected_at: "{{ now(true, '%Y-%m-%dT%H:%M:%SZ') }}"
+      services: "{{ service_audit_services }}"
+      posture: "{{ service_audit_posture }}"
+      totals:
+        enabled: "{{ service_audit_services | length }}"
+        good: "{{ service_audit_services | selectattr('log_status', 'equalto', 'good') | list | length }}"
+        warning: "{{ service_audit_services | selectattr('log_status', 'equalto', 'warning') | list | length }}"
+        critical: "{{ service_audit_services | selectattr('log_status', 'equalto', 'critical') | list | length }}"
+      findings: "{{ service_audit_findings }}"
+
+- name: Summarise the audit for this host
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ sox_audit.totals.enabled }} enabled services,
+      {{ sox_audit.totals.critical }} with no log capture,
+      {{ sox_audit.totals.warning }} needing review,
+      {{ sox_audit.findings | length }} host-level finding(s).

@@ -1,0 +1,110 @@
+---
+# What Event-Driven Ansible runs when drift is reported. Deliberately
+# non-destructive: it gathers the evidence an auditor needs about an unplanned
+# change and records it. Remediation is a separate, human-approved decision.
+#
+# Extra vars supplied by the rulebook (all optional except drift_host):
+#   drift_host              the host that moved
+#   drift_trigger           config_file | service_state | baseline_sensor
+#   drift_detail            free-text description from the event
+#   drift_files             list of changed file paths
+#   drift_services_added    list of newly enabled services
+#   drift_services_removed  list of services no longer enabled
+
+- name: Record configuration drift
+  hosts: "{{ drift_host | default('sox_targets') }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    sox_baseline_path: /var/lib/sox_audit/baseline.json
+    drift_trigger: unspecified
+    drift_detail: ""
+    drift_files: []
+    drift_services_added: []
+    drift_services_removed: []
+    drift_register: "{{ sox_report_dir | default(playbook_dir ~ '/../reports') }}/drift_register.csv"
+
+  tasks:
+    - name: Announce the event
+      ansible.builtin.debug:
+        msg: >-
+          Drift reported on {{ inventory_hostname }}
+          (trigger: {{ drift_trigger }}){{ ': ' ~ drift_detail if drift_detail else '' }}
+
+    - name: Show how each changed file differs from the approved copy
+      ansible.builtin.shell:
+        cmd: >-
+          diff -u {{ (sox_baseline_path | dirname ~ '/baseline.d/' ~ (item | regex_replace('/', '_'))) | quote }}
+          {{ item | quote }} || true
+      changed_when: false
+      loop: "{{ drift_files }}"
+      register: _diffs
+
+    - name: Report the differences
+      ansible.builtin.debug:
+        msg: "{{ item.item }}:\n{{ item.stdout | default('(no approved copy on file to compare against)', true) }}"
+      loop: "{{ _diffs.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Show the current state of any service that changed
+      ansible.builtin.command:
+        cmd: "systemctl status {{ item }} --no-pager --lines=0"
+      changed_when: false
+      failed_when: false
+      loop: "{{ drift_services_added + drift_services_removed }}"
+      register: _service_state
+
+    - name: Report the service state
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | default([]) }}"
+      loop: "{{ _service_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # Best effort: auditd can name the account behind the change, which is
+    # exactly the question a SOX reviewer asks first.
+    - name: Look for an audit trail of who made the change
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          ausearch --input-logs -ts today \
+            {% for f in drift_files %}-f {{ f | quote }} {% endfor %} \
+            2>/dev/null | grep -E 'acct=|auid=' | tail -5 || true
+        executable: /bin/bash
+      changed_when: false
+      register: _attribution
+      when: drift_files | length > 0
+
+    - name: Report the attribution
+      ansible.builtin.debug:
+        msg: >-
+          {{ _attribution.stdout_lines
+             | default(['No auditd attribution available - confirm audit rules cover these paths.'], true) }}
+      when: drift_files | length > 0
+
+    - name: Record the event in the drift register
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Ensure the register exists with a header
+          ansible.builtin.lineinfile:
+            path: "{{ drift_register }}"
+            line: detected_at,host,trigger,detail,changed_files,services_added,services_removed
+            insertbefore: BOF
+            create: true
+            mode: "0644"
+
+        - name: Append this event
+          ansible.builtin.lineinfile:
+            path: "{{ drift_register }}"
+            line: >-
+              {{ now(true, '%Y-%m-%dT%H:%M:%SZ') }},{{ inventory_hostname }},{{ drift_trigger }},"{{
+              drift_detail | replace('"', '""') }}","{{ drift_files | join('; ') }}","{{
+              drift_services_added | join('; ') }}","{{ drift_services_removed | join('; ') }}"
+            insertafter: EOF
+
+        - name: Point at the register
+          ansible.builtin.debug:
+            msg: "Drift recorded in {{ drift_register }}"

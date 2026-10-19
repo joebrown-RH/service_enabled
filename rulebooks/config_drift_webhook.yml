@@ -1,0 +1,39 @@
+---
+# The AAP path. `drift_sensor.yml` runs on a schedule, compares every host
+# against its approved baseline, and posts one event per drifted host here.
+#
+# This works for a whole fleet, because the sensing happens on the managed
+# hosts rather than inside the decision environment container.
+#
+# Change `organization` if your AAP organization is not named "Default".
+
+- name: SOX configuration drift reported by the baseline sensor
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+
+  rules:
+    - name: Record a host that no longer matches its baseline
+      condition: event.payload.source == "sox_drift_sensor"
+      action:
+        run_job_template:
+          name: SOX - Drift Response
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.drift.hostname }}"
+            extra_vars:
+              drift_host: "{{ event.payload.drift.hostname }}"
+              drift_trigger: baseline_sensor
+              drift_detail: >-
+                Drifted from the baseline captured at {{ event.payload.drift.baselined_at }}
+              drift_files: "{{ event.payload.drift.changed_files }}"
+              drift_services_added: "{{ event.payload.drift.enabled_services_added }}"
+              drift_services_removed: "{{ event.payload.drift.enabled_services_removed }}"
+
+    - name: Log anything else that reaches this endpoint
+      condition: event.payload.source != "sox_drift_sensor"
+      action:
+        debug:
+          msg: "Ignoring event from unexpected source: {{ event.payload.source }}"

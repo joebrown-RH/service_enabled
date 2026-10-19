@@ -1,0 +1,12 @@
+{#- One row per enabled service, with the host's logging posture repeated on
+    each row so the file pivots cleanly in a spreadsheet. -#}
+{%- macro c(value) -%}
+"{{ (value | string) | replace('"', '""') }}"
+{%- endmacro -%}
+host,fqdn,operating_system,collected_at,service,description,unit_file_state,active_state,sub_state,runs_as,log_status,log_destination,standard_output,standard_error,effective_output,effective_error,syslog_identifier,unit_path,assessment,audit_relevant,journald_persistent,journald_storage,journald_retention,remote_log_forwarding,auditd_enabled,audit_rule_count,logrotate_present,host_finding_count
+{% for host in audit_report_hosts %}
+{%- set p = host.posture %}
+{%- for svc in host.services | sort(attribute='name') %}
+{{ c(host.hostname) }},{{ c(host.fqdn) }},{{ c(host.distribution) }},{{ c(host.collected_at) }},{{ c(svc.name) }},{{ c(svc.description) }},{{ c(svc.unit_file_state) }},{{ c(svc.active_state) }},{{ c(svc.sub_state) }},{{ c(svc.run_as) }},{{ c(svc.log_status) }},{{ c(svc.log_destination) }},{{ c(svc.std_output) }},{{ c(svc.std_error) }},{{ c(svc.effective_output) }},{{ c(svc.effective_error) }},{{ c(svc.syslog_identifier) }},{{ c(svc.unit_path) }},{{ c(svc.log_note) }},{{ c(svc.audit_relevant) }},{{ c(p.journald_persistent) }},{{ c(p.journald_storage) }},{{ c(p.journald_retention) }},{{ c(p.remote_forwarding) }},{{ c(p.auditd_enabled) }},{{ c(p.audit_rule_count) }},{{ c(p.logrotate_present) }},{{ c(host.findings | length) }}
+{% endfor %}
+{%- endfor %}

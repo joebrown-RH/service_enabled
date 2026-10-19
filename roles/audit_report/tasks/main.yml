@@ -1,0 +1,78 @@
+---
+# Runs once on the control node and pulls each audited host's `sox_audit` fact
+# out of hostvars, so the report covers the whole play in a single file.
+
+- name: Gather the audit records from every host that was audited
+  ansible.builtin.set_fact:
+    audit_report_hosts: >-
+      {{ hostvars | dict2items
+         | selectattr('value.sox_audit', 'defined')
+         | map(attribute='value.sox_audit')
+         | sort(attribute='hostname')
+         | list }}
+
+- name: Fail clearly if nothing was collected
+  ansible.builtin.assert:
+    that: audit_report_hosts | length > 0
+    fail_msg: >-
+      No host produced a `sox_audit` fact. Run the service_audit role against
+      your targets in an earlier play before rendering the report.
+    quiet: true
+
+- name: Compute the fleet-wide totals
+  ansible.builtin.set_fact:
+    audit_report_summary:
+      generated_at: "{{ now(true, '%Y-%m-%d %H:%M:%S UTC') }}"
+      host_count: "{{ audit_report_hosts | length }}"
+      service_count: "{{ audit_report_all_services | length }}"
+      good: "{{ audit_report_all_services | selectattr('log_status', 'equalto', 'good') | list | length }}"
+      warning: "{{ audit_report_all_services | selectattr('log_status', 'equalto', 'warning') | list | length }}"
+      critical: "{{ audit_report_all_services | selectattr('log_status', 'equalto', 'critical') | list | length }}"
+      finding_count: "{{ audit_report_hosts | map(attribute='findings') | map('length') | sum }}"
+      hosts_with_findings: >-
+        {{ audit_report_hosts | rejectattr('findings', 'equalto', []) | list | length }}
+  vars:
+    audit_report_all_services: "{{ audit_report_hosts | map(attribute='services') | flatten }}"
+
+# Pinned once so the HTML and the CSV from a single run always carry the same
+# stamp; `now()` inside the render loop would evaluate per file.
+- name: Pin the timestamp for this run
+  ansible.builtin.set_fact:
+    audit_report_stamp: "{{ now(true, '%Y%m%dT%H%M%SZ') }}"
+
+- name: Ensure the report directory exists
+  ansible.builtin.file:
+    path: "{{ audit_report_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render the report
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ audit_report_dir }}/{{ audit_report_basename }}_{{ audit_report_stamp }}.{{ item.ext }}"
+    mode: "0644"
+  loop:
+    - {src: sox_report.html.j2, ext: html}
+    - {src: sox_report.csv.j2, ext: csv}
+  loop_control:
+    label: "{{ item.ext }}"
+  register: audit_report_rendered
+
+- name: Keep a stable copy at a predictable path
+  ansible.builtin.copy:
+    src: "{{ item.dest }}"
+    dest: "{{ audit_report_dir }}/{{ audit_report_basename }}_latest.{{ item.item.ext }}"
+    remote_src: true
+    mode: "0644"
+  loop: "{{ audit_report_rendered.results }}"
+  loop_control:
+    label: "{{ item.item.ext }}"
+  when: audit_report_write_latest | bool
+
+- name: Show where the evidence was written
+  ansible.builtin.debug:
+    msg: >-
+      {{ audit_report_summary.host_count }} host(s),
+      {{ audit_report_summary.service_count }} enabled services,
+      {{ audit_report_summary.critical }} with no log capture.
+      Report: {{ audit_report_rendered.results | map(attribute='dest') | join(' and ') }}

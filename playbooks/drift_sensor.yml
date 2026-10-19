@@ -1,0 +1,101 @@
+---
+# Compare each host against its approved baseline and, when something has moved,
+# post one event per host to the Event-Driven Ansible webhook.
+#
+# This is the multi-host drift path: run it on a short schedule in AAP. The
+# rulebook does the deciding; this playbook only reports facts.
+#
+#   ansible-playbook playbooks/drift_sensor.yml -e eda_webhook_url=http://eda:5000/endpoint
+
+- name: Detect configuration drift against the approved baseline
+  hosts: "{{ sox_hosts | default('sox_targets') }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    sox_baseline_path: /var/lib/sox_audit/baseline.json
+    # Set to the listening address of the config_drift_webhook.yml activation.
+    eda_webhook_url: ""
+
+  tasks:
+    - name: Fingerprint the current state
+      ansible.builtin.include_role:
+        name: service_audit
+        tasks_from: fingerprints
+
+    - name: Read the approved baseline
+      ansible.builtin.slurp:
+        src: "{{ sox_baseline_path }}"
+      register: _baseline_raw
+      failed_when: false
+
+    - name: Skip hosts that have never been baselined
+      ansible.builtin.debug:
+        msg: >-
+          No baseline at {{ sox_baseline_path }} on {{ inventory_hostname }}.
+          Run drift_baseline.yml first; this host cannot be assessed for drift.
+      when: _baseline_raw.content is not defined
+
+    - name: Compare the current state against the baseline
+      when: _baseline_raw.content is defined
+      block:
+        # dict2items turns each file into a {key, value} pair, so a plain list
+        # difference catches both changed checksums and newly watched files.
+        - name: Work out what moved
+          ansible.builtin.set_fact:
+            sox_drift:
+              hostname: "{{ inventory_hostname }}"
+              detected_at: "{{ now(true, '%Y-%m-%dT%H:%M:%SZ') }}"
+              baselined_at: "{{ _baseline.captured_at }}"
+              changed_files: >-
+                {{ (sox_fingerprint.files | dict2items | difference(_baseline.files | dict2items))
+                   | map(attribute='key') | sort | list }}
+              enabled_services_added: >-
+                {{ sox_fingerprint.enabled_services | difference(_baseline.enabled_services) | sort }}
+              enabled_services_removed: >-
+                {{ _baseline.enabled_services | difference(sox_fingerprint.enabled_services) | sort }}
+          vars:
+            _baseline: "{{ _baseline_raw.content | b64decode | from_json }}"
+
+        - name: Decide whether this host has drifted
+          ansible.builtin.set_fact:
+            sox_has_drift: >-
+              {{ (sox_drift.changed_files | length
+                  + sox_drift.enabled_services_added | length
+                  + sox_drift.enabled_services_removed | length) > 0 }}
+
+        - name: Report the result for this host
+          ansible.builtin.debug:
+            msg: >-
+              {{ inventory_hostname }}:
+              {{ 'DRIFT - ' ~ sox_drift.changed_files | length ~ ' config file(s) changed, '
+                 ~ sox_drift.enabled_services_added | length ~ ' service(s) newly enabled, '
+                 ~ sox_drift.enabled_services_removed | length ~ ' no longer enabled'
+                 if sox_has_drift | bool else 'matches baseline' }}
+
+        # Posting to the EDA webhook is the event ingress for a rulebook, not an
+        # AAP API call -- the rulebook decides what to do with it.
+        - name: Notify Event-Driven Ansible
+          ansible.builtin.uri:
+            url: "{{ eda_webhook_url }}"
+            method: POST
+            body_format: json
+            body:
+              source: sox_drift_sensor
+              drift: "{{ sox_drift }}"
+            status_code: [200, 202]
+          delegate_to: localhost
+          become: false
+          when:
+            - sox_has_drift | bool
+            - eda_webhook_url | length > 0
+
+        - name: Explain why no event was sent
+          ansible.builtin.debug:
+            msg: >-
+              Drift detected on {{ inventory_hostname }} but eda_webhook_url is
+              unset, so no event was raised. Pass -e eda_webhook_url=... to wire
+              this into the rulebook.
+          when:
+            - sox_has_drift | bool
+            - eda_webhook_url | length == 0

@@ -1,0 +1,61 @@
+---
+# Record the "known good" state that drift is measured against. Run this once
+# after a host is built and approved, and again after any authorised change.
+#
+#   ansible-playbook playbooks/drift_baseline.yml
+
+- name: Capture the approved configuration baseline
+  hosts: "{{ sox_hosts | default('sox_targets') }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    sox_baseline_path: /var/lib/sox_audit/baseline.json
+
+  tasks:
+    - name: Fingerprint the watched files and enabled services
+      ansible.builtin.include_role:
+        name: service_audit
+        tasks_from: fingerprints
+
+    - name: Ensure the baseline directory exists
+      ansible.builtin.file:
+        path: "{{ sox_baseline_path | dirname }}"
+        state: directory
+        mode: "0750"
+
+    - name: Write the baseline
+      ansible.builtin.copy:
+        content: "{{ sox_fingerprint | to_nice_json }}\n"
+        dest: "{{ sox_baseline_path }}"
+        mode: "0640"
+
+    # Keeping a copy of each approved file lets the drift response show a real
+    # diff rather than just "the checksum moved". The copies stay root-only on
+    # the host they came from; set sox_baseline_keep_copies=false to opt out.
+    - name: Keep an approved copy of each watched file for diffing
+      when: sox_baseline_keep_copies | default(true) | bool
+      block:
+        - name: Ensure the copy directory exists
+          ansible.builtin.file:
+            path: "{{ sox_baseline_path | dirname }}/baseline.d"
+            state: directory
+            mode: "0700"
+
+        - name: Copy each watched file that exists
+          ansible.builtin.copy:
+            src: "{{ item.key }}"
+            dest: "{{ sox_baseline_path | dirname }}/baseline.d/{{ item.key | regex_replace('/', '_') }}"
+            remote_src: true
+            mode: "0600"
+          loop: "{{ sox_fingerprint.files | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          when: item.value not in ['absent', 'unreadable']
+
+    - name: Report what was baselined
+      ansible.builtin.debug:
+        msg: >-
+          Baseline written to {{ sox_baseline_path }}:
+          {{ sox_fingerprint.enabled_services | length }} enabled services,
+          {{ sox_fingerprint.files | length }} watched files.

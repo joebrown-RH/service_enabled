@@ -1,0 +1,47 @@
+---
+# systemd unit properties pulled for every enabled service.
+# Order matters: the parser batches `systemctl show` output by this length,
+# so keep additions at the end and never remove one without re-reading tasks/main.yml.
+service_audit_unit_properties:
+  - Id
+  - Description
+  - UnitFileState
+  - ActiveState
+  - SubState
+  - StandardOutput
+  - StandardError
+  - SyslogIdentifier
+  - SyslogFacility
+  - FragmentPath
+  - User
+
+# Services an auditor specifically expects to find enabled on an in-scope host.
+# Anything in this list that is NOT enabled is raised as a finding.
+service_audit_expected_services:
+  - auditd.service
+  - rsyslog.service
+  - sshd.service
+  - chronyd.service
+
+# StandardOutput/StandardError values that mean "this output is discarded".
+service_audit_discard_sinks:
+  - "null"
+
+# Values that mean output reaches a durable, centrally-collectable log.
+service_audit_durable_sinks:
+  - journal
+  - "journal+console"
+  - syslog
+  - "syslog+console"
+  - kmsg
+  - "kmsg+console"
+
+# Files whose content is fingerprinted for the config-drift baseline.
+service_audit_watched_files:
+  - /etc/ssh/sshd_config
+  - /etc/systemd/journald.conf
+  - /etc/rsyslog.conf
+  - /etc/audit/auditd.conf
+  - /etc/audit/rules.d/audit.rules
+  - /etc/login.defs
+  - /etc/sudoers

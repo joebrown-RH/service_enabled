@@ -1,0 +1,21 @@
+---
+# Shared by the full audit and by the lightweight drift fingerprint, so both
+# always agree on what "enabled" means.
+
+# noqa command-instead-of-module: the systemd module manages unit state; it
+# cannot enumerate unit files, which is what this audit needs.
+- name: List service unit files that are enabled # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl list-unit-files --type=service --state=enabled --no-legend --no-pager
+  changed_when: false
+  register: service_audit_unit_files_raw
+
+# Template units (foo@.service) have no instance and make `systemctl show` exit
+# non-zero for the whole batch, so they are dropped before the properties query.
+- name: Build the list of enabled unit names
+  ansible.builtin.set_fact:
+    service_audit_enabled_units: >-
+      {{ service_audit_unit_files_raw.stdout_lines
+         | map('split') | map('first')
+         | reject('search', '@\.service$')
+         | list }}

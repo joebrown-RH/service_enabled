@@ -1,0 +1,10 @@
+---
+# Where generated HTML/CSV evidence is written on the control node
+# (in AAP this is inside the execution environment -- see README "Retrieving
+# the report from AAP" for how to ship it somewhere durable).
+sox_report_dir: "{{ playbook_dir }}/../reports"
+
+# Shown in the report header so an auditor knows what they are looking at.
+sox_report_title: "SOX Evidence - Linux Enabled Services & Logging Posture"
+sox_report_organization: "Example Corp"
+sox_control_reference: "ITGC-LOG-01"

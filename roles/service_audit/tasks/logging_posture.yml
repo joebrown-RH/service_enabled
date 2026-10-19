@@ -1,0 +1,89 @@
+---
+# Host-level logging capability: can this host actually retain and forward the
+# evidence an auditor will ask for, independent of any single service?
+
+- name: Read the effective journald configuration
+  ansible.builtin.command:
+    cmd: systemd-analyze cat-config systemd/journald.conf
+  changed_when: false
+  failed_when: false
+  register: service_audit_journald_config
+
+- name: Check whether the journal is stored persistently on disk
+  ansible.builtin.stat:
+    path: /var/log/journal
+  register: service_audit_journal_dir
+
+# The matched lines are carried into the report as evidence, so a reviewer can
+# confirm the forwarding target rather than taking a boolean on trust.
+- name: Look for remote log forwarding in the rsyslog configuration
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      grep -RhsE '^[[:space:]]*[^#].*(@@?[A-Za-z0-9._-]+|omfwd)' \
+        /etc/rsyslog.conf /etc/rsyslog.d/ || true
+    executable: /bin/bash
+  changed_when: false
+  register: service_audit_rsyslog_forwarding
+
+- name: Count the loaded audit rules
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      auditctl -l 2>/dev/null | grep -cvE '^(No rules|$)' || true
+    executable: /bin/bash
+  changed_when: false
+  register: service_audit_audit_rules
+
+- name: Check for logrotate
+  ansible.builtin.stat:
+    path: /etc/logrotate.conf
+  register: service_audit_logrotate_conf
+
+- name: Record the host logging posture
+  ansible.builtin.set_fact:
+    service_audit_posture:
+      journald_storage: >-
+        {{ service_audit_journald_config.stdout | regex_findall('(?m)^\s*Storage\s*=\s*(\S+)')
+           | last | default('auto (compiled-in default)', true) }}
+      journald_persistent: "{{ service_audit_journal_dir.stat.isdir | default(false) }}"
+      journald_retention: >-
+        {{ service_audit_journald_config.stdout | regex_findall('(?m)^\s*MaxRetentionSec\s*=\s*(\S+)')
+           | last | default('not set', true) }}
+      journald_max_use: >-
+        {{ service_audit_journald_config.stdout | regex_findall('(?m)^\s*SystemMaxUse\s*=\s*(\S+)')
+           | last | default('not set', true) }}
+      journald_forward_to_syslog: >-
+        {{ service_audit_journald_config.stdout | regex_findall('(?m)^\s*ForwardToSyslog\s*=\s*(\S+)')
+           | last | default('not set', true) }}
+      rsyslog_enabled: "{{ 'rsyslog.service' in service_audit_enabled_service_names }}"
+      remote_forwarding: "{{ service_audit_rsyslog_forwarding.stdout_lines | length > 0 }}"
+      remote_forwarding_evidence: "{{ service_audit_rsyslog_forwarding.stdout_lines | map('trim') | list }}"
+      auditd_enabled: "{{ 'auditd.service' in service_audit_enabled_service_names }}"
+      audit_rule_count: "{{ service_audit_audit_rules.stdout | trim | int }}"
+      logrotate_present: "{{ service_audit_logrotate_conf.stat.exists }}"
+  vars:
+    service_audit_enabled_service_names: "{{ service_audit_services | map(attribute='name') | list }}"
+
+# Each finding is phrased as the control gap an auditor would write up, so the
+# report can be handed over with no further translation.
+- name: Derive the host-level findings
+  ansible.builtin.set_fact:
+    service_audit_findings: >-
+      {{ (_missing_expected | map('regex_replace', '^(.*)$', 'Expected service \1 is not enabled') | list)
+         + _posture_findings }}
+  vars:
+    _missing_expected: >-
+      {{ service_audit_expected_services
+         | difference(service_audit_services | map(attribute='name') | list) }}
+    _posture_findings: >-
+      {{ ([] if service_audit_posture.journald_persistent
+            else ['Journal storage is not persistent (/var/log/journal is absent), so logs are lost on reboot'])
+         + ([] if service_audit_posture.remote_forwarding
+            else ['No remote log forwarding is configured, so logs are not protected from local tampering'])
+         + ([] if service_audit_posture.audit_rule_count | int > 0
+            else ['No auditd rules are loaded, so privileged activity is not being recorded'])
+         + ([] if service_audit_posture.logrotate_present
+            else ['logrotate is not configured, so log retention is unmanaged'])
+         + ([] if service_audit_posture.journald_retention != 'not set'
+            else ['journald MaxRetentionSec is not set, so no explicit retention period is enforced']) }}

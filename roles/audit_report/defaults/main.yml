@@ -1,0 +1,11 @@
+---
+audit_report_dir: "{{ sox_report_dir | default(playbook_dir ~ '/../reports') }}"
+audit_report_basename: sox_service_audit
+
+# Also drop a stable `*_latest.*` copy so a dashboard or a scheduled fetch can
+# point at one unchanging path.
+audit_report_write_latest: true
+
+audit_report_title: "{{ sox_report_title | default('SOX Evidence - Linux Enabled Services & Logging Posture') }}"
+audit_report_organization: "{{ sox_report_organization | default('') }}"
+audit_report_control_reference: "{{ sox_control_reference | default('') }}"

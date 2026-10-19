@@ -1,0 +1,14 @@
+# Generated audit output
+reports/
+
+# Ansible runtime
+*.retry
+collections/ansible_collections/
+.ansible/
+ansible-navigator.log
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

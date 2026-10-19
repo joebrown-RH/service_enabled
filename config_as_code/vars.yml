@@ -1,0 +1,15 @@
+---
+# Edit these to match your AAP instance, then feed this file to the
+# infra.aap_configuration roles alongside the definitions in this directory.
+_org: Default
+_project: SOX Service Audit
+_sox_inventory: SOX Linux Targets
+_ee: Default execution environment
+_machine_credential: SOX Linux Machine Credential
+
+# Event-Driven Ansible
+_eda_decision_environment: Default Decision Environment
+_eda_controller_credential: AAP Controller Credential
+
+# Git remote this project syncs from
+_project_url: https://github.com/joebrown-RH/service_enabled.git

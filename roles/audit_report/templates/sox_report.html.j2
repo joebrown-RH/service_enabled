@@ -1,0 +1,518 @@
+{#- Self-contained SOX evidence report: no external CSS, fonts or scripts, so it
+    survives being emailed to an auditor or opened from a file share. -#}
+{%- set s = audit_report_summary -%}
+{%- set total = s.service_count | int -%}
+{%- macro pct(n) -%}{{ ((n | int) / total * 100) | round(2) if total > 0 else 0 }}{%- endmacro -%}
+{%- macro status_pill(state) -%}
+{%- if state == 'good' -%}
+<span class="pill pill-good"><span class="glyph" aria-hidden="true">&check;</span>Captured</span>
+{%- elif state == 'warning' -%}
+<span class="pill pill-warning"><span class="glyph" aria-hidden="true">!</span>Review</span>
+{%- else -%}
+<span class="pill pill-critical"><span class="glyph" aria-hidden="true">&times;</span>Not captured</span>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro yesno(value, good_is_true=true) -%}
+{%- set v = value | bool -%}
+{%- set ok = v if good_is_true else not v -%}
+<span class="pill {{ 'pill-good' if ok else 'pill-critical' }}"><span class="glyph" aria-hidden="true">{{ '&check;' | safe if ok else '&times;' | safe }}</span>{{ 'Yes' if v else 'No' }}</span>
+{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ audit_report_title }}</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --gridline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --accent: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --gridline: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .viz-root {
+    background: var(--page);
+    color: var(--text-primary);
+    min-height: 100vh;
+    padding: 32px 24px 64px;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+
+  header.report-head {
+    display: flex; flex-wrap: wrap; gap: 24px;
+    align-items: flex-start; justify-content: space-between;
+    padding-bottom: 20px; margin-bottom: 28px;
+    border-bottom: 1px solid var(--gridline);
+  }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 10px; letter-spacing: -0.01em; }
+  h2 {
+    font-size: 13px; font-weight: 650; margin: 0 0 14px;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary);
+  }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--text-secondary); font-size: 13px; }
+  .meta b { color: var(--text-primary); font-weight: 600; }
+
+  .theme-toggle {
+    font: inherit; font-size: 12px; cursor: pointer;
+    background: var(--surface-1); color: var(--text-secondary);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px;
+  }
+  .theme-toggle:hover { color: var(--text-primary); }
+
+  section { margin-bottom: 36px; }
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+
+  /* ---- stat tiles ---------------------------------------------------- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px;
+  }
+  .tile .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); margin-bottom: 8px;
+  }
+  .tile .value { font-size: 34px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
+  .tile .sub { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+  .tile.is-critical { border-left: 3px solid var(--critical); }
+  .tile.is-warning { border-left: 3px solid var(--warning); }
+  .tile.is-good { border-left: 3px solid var(--good); }
+
+  /* ---- coverage bars ------------------------------------------------- */
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 18px; font-size: 12px; color: var(--text-secondary); }
+  .legend .key { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  .bar { display: flex; gap: 2px; height: 22px; width: 100%; background: transparent; }
+  .bar .seg { height: 100%; position: relative; min-width: 2px; }
+  .bar .seg:first-child { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
+  .bar .seg:last-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+  .seg-good { background: var(--good); }
+  .seg-warning { background: var(--warning); }
+  .seg-critical { background: var(--critical); }
+  .bar.is-empty {
+    border: 1px dashed var(--baseline); border-radius: 4px;
+    color: var(--text-muted); font-size: 11px; display: flex;
+    align-items: center; justify-content: center;
+  }
+
+  .hostbars { display: grid; grid-template-columns: minmax(130px, auto) 1fr minmax(150px, auto); gap: 10px 16px; align-items: center; }
+  .hostbars .name { font-weight: 550; font-size: 13px; overflow-wrap: anywhere; }
+  .hostbars .counts { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; text-align: right; }
+  .hostbars .bar { height: 18px; }
+
+  /* ---- status pills -------------------------------------------------- */
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+    font-size: 11.5px; font-weight: 550; color: var(--text-primary);
+    background: transparent; padding: 2px 0;
+  }
+  .pill .glyph {
+    width: 15px; height: 15px; border-radius: 4px; flex: 0 0 15px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff; line-height: 1;
+  }
+  .pill-good .glyph { background: var(--good); }
+  .pill-warning .glyph { background: var(--warning); color: #0b0b0b; }
+  .pill-critical .glyph { background: var(--critical); }
+
+  /* ---- tables -------------------------------------------------------- */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-muted);
+    padding: 8px 10px; border-bottom: 1px solid var(--baseline); white-space: nowrap;
+  }
+  tbody td { padding: 8px 10px; border-bottom: 1px solid var(--gridline); vertical-align: top; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  td.svc { font-weight: 550; overflow-wrap: anywhere; }
+  td.note { color: var(--text-secondary); font-size: 12px; }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere;
+  }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text-primary); }
+  th.sortable::after { content: " \2195"; opacity: 0.35; }
+  th.sortable[data-dir="asc"]::after { content: " \2191"; opacity: 1; }
+  th.sortable[data-dir="desc"]::after { content: " \2193"; opacity: 1; }
+
+  /* ---- filters ------------------------------------------------------- */
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .filters input, .filters select {
+    font: inherit; font-size: 13px; padding: 7px 10px;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  .filters input { min-width: 260px; }
+  .filters .count { font-size: 12px; color: var(--text-muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* ---- findings ------------------------------------------------------ */
+  .finding-host { margin-bottom: 16px; }
+  .finding-host:last-child { margin-bottom: 0; }
+  .finding-host .hn { font-weight: 600; font-size: 13px; margin-bottom: 7px; }
+  ul.findings { margin: 0; padding-left: 0; list-style: none; }
+  ul.findings li {
+    display: flex; gap: 9px; align-items: flex-start;
+    padding: 5px 0; color: var(--text-secondary); font-size: 13px;
+  }
+  ul.findings li .glyph {
+    width: 15px; height: 15px; border-radius: 4px; flex: 0 0 15px; margin-top: 2px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff; background: var(--critical); line-height: 1;
+  }
+  .all-clear { display: flex; align-items: center; gap: 9px; color: var(--text-secondary); }
+  .all-clear .glyph {
+    width: 15px; height: 15px; border-radius: 4px; flex: 0 0 15px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff; background: var(--good); line-height: 1;
+  }
+
+  .evidence { margin: 4px 0 0; padding-left: 16px; color: var(--text-muted); font-size: 11.5px; }
+
+  footer.report-foot {
+    border-top: 1px solid var(--gridline); padding-top: 16px;
+    color: var(--text-muted); font-size: 12px;
+  }
+
+  @media print {
+    .viz-root { background: #fff; padding: 0; }
+    .theme-toggle, .filters { display: none; }
+    .card, .tile { break-inside: avoid; border-color: #ccc; }
+    tbody tr { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<div class="wrap">
+
+  <header class="report-head">
+    <div>
+      <h1>{{ audit_report_title }}</h1>
+      <div class="meta">
+        {% if audit_report_organization %}<span><b>{{ audit_report_organization }}</b></span>{% endif %}
+        {% if audit_report_control_reference %}<span>Control <b>{{ audit_report_control_reference }}</b></span>{% endif %}
+        <span>Generated <b>{{ s.generated_at }}</b></span>
+        <span>Scope <b>{{ s.host_count }}</b> host{{ '' if s.host_count | int == 1 else 's' }}</span>
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" type="button">Toggle theme</button>
+  </header>
+
+  <section class="tiles">
+    <div class="tile">
+      <div class="label">Hosts in scope</div>
+      <div class="value">{{ s.host_count }}</div>
+      <div class="sub">systemd-managed Linux</div>
+    </div>
+    <div class="tile">
+      <div class="label">Enabled services</div>
+      <div class="value">{{ s.service_count }}</div>
+      <div class="sub">start automatically at boot</div>
+    </div>
+    <div class="tile is-good">
+      <div class="label">Log output captured</div>
+      <div class="value">{{ s.good }}</div>
+      <div class="sub">{{ pct(s.good) }}% of enabled services</div>
+    </div>
+    <div class="tile is-warning">
+      <div class="label">Needs review</div>
+      <div class="value">{{ s.warning }}</div>
+      <div class="sub">partial or non-durable capture</div>
+    </div>
+    <div class="tile is-critical">
+      <div class="label">No log capture</div>
+      <div class="value">{{ s.critical }}</div>
+      <div class="sub">output is discarded</div>
+    </div>
+    <div class="tile {{ 'is-critical' if s.finding_count | int > 0 else 'is-good' }}">
+      <div class="label">Host findings</div>
+      <div class="value">{{ s.finding_count }}</div>
+      <div class="sub">across {{ s.hosts_with_findings }} host{{ '' if s.hosts_with_findings | int == 1 else 's' }}</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Logging coverage of enabled services</h2>
+    <div class="card">
+      <div class="legend">
+        <span class="key"><span class="swatch" style="background: var(--good)"></span> Captured &mdash; reaches the journal or syslog</span>
+        <span class="key"><span class="swatch" style="background: var(--warning)"></span> Review &mdash; file, console, or stderr dropped</span>
+        <span class="key"><span class="swatch" style="background: var(--critical)"></span> Not captured &mdash; output discarded</span>
+      </div>
+
+      <div class="bar" role="img"
+           aria-label="Fleet logging coverage: {{ s.good }} captured, {{ s.warning }} needing review, {{ s.critical }} not captured, of {{ total }} enabled services.">
+        {%- if s.good | int > 0 %}<span class="seg seg-good" style="width: {{ pct(s.good) }}%" title="Captured: {{ s.good }} services ({{ pct(s.good) }}%)"></span>{% endif -%}
+        {%- if s.warning | int > 0 %}<span class="seg seg-warning" style="width: {{ pct(s.warning) }}%" title="Review: {{ s.warning }} services ({{ pct(s.warning) }}%)"></span>{% endif -%}
+        {%- if s.critical | int > 0 %}<span class="seg seg-critical" style="width: {{ pct(s.critical) }}%" title="Not captured: {{ s.critical }} services ({{ pct(s.critical) }}%)"></span>{% endif -%}
+      </div>
+      <div style="margin-top: 8px; font-size: 12px; color: var(--text-secondary);">
+        Fleet total &mdash; {{ s.good }} captured, {{ s.warning }} to review, {{ s.critical }} not captured
+      </div>
+
+      <h2 style="margin-top: 26px;">By host</h2>
+      <div class="hostbars">
+        {%- for host in audit_report_hosts %}
+        {%- set t = host.totals %}
+        {%- set ht = t.enabled | int %}
+        <div class="name">{{ host.hostname }}</div>
+        {%- if ht > 0 %}
+        <div class="bar" role="img" aria-label="{{ host.hostname }}: {{ t.good }} captured, {{ t.warning }} to review, {{ t.critical }} not captured.">
+          {%- if t.good | int > 0 %}<span class="seg seg-good" style="width: {{ ((t.good | int) / ht * 100) | round(2) }}%" title="{{ host.hostname }} &mdash; captured: {{ t.good }}"></span>{% endif -%}
+          {%- if t.warning | int > 0 %}<span class="seg seg-warning" style="width: {{ ((t.warning | int) / ht * 100) | round(2) }}%" title="{{ host.hostname }} &mdash; review: {{ t.warning }}"></span>{% endif -%}
+          {%- if t.critical | int > 0 %}<span class="seg seg-critical" style="width: {{ ((t.critical | int) / ht * 100) | round(2) }}%" title="{{ host.hostname }} &mdash; not captured: {{ t.critical }}"></span>{% endif -%}
+        </div>
+        {%- else %}
+        <div class="bar is-empty">no enabled services</div>
+        {%- endif %}
+        <div class="counts">{{ t.good }} / {{ t.warning }} / {{ t.critical }} of {{ t.enabled }}</div>
+        {%- endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Control findings</h2>
+    <div class="card">
+      {%- set flagged = audit_report_hosts | rejectattr('findings', 'equalto', []) | list %}
+      {%- if flagged | length == 0 %}
+      <div class="all-clear"><span class="glyph" aria-hidden="true">&check;</span> No host-level control gaps were detected.</div>
+      {%- else %}
+      {%- for host in flagged %}
+      <div class="finding-host">
+        <div class="hn">{{ host.hostname }}</div>
+        <ul class="findings">
+          {%- for finding in host.findings %}
+          <li><span class="glyph" aria-hidden="true">!</span><span>{{ finding }}</span></li>
+          {%- endfor %}
+        </ul>
+      </div>
+      {%- endfor %}
+      {%- endif %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Host logging posture</h2>
+    <div class="card" style="overflow-x: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Host</th>
+            <th>Operating system</th>
+            <th>Persistent journal</th>
+            <th>Journal storage</th>
+            <th>Retention</th>
+            <th>Max disk use</th>
+            <th>Remote forwarding</th>
+            <th>auditd enabled</th>
+            <th>Audit rules</th>
+            <th>logrotate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {%- for host in audit_report_hosts %}
+          {%- set p = host.posture %}
+          <tr>
+            <td class="svc">{{ host.hostname }}</td>
+            <td>{{ host.distribution }}</td>
+            <td>{{ yesno(p.journald_persistent) }}</td>
+            <td><code>{{ p.journald_storage }}</code></td>
+            <td><code>{{ p.journald_retention }}</code></td>
+            <td><code>{{ p.journald_max_use }}</code></td>
+            <td>
+              {{ yesno(p.remote_forwarding) }}
+              {%- if p.remote_forwarding_evidence | length > 0 %}
+              <ul class="evidence">
+                {%- for line in p.remote_forwarding_evidence[:3] %}
+                <li><code>{{ line }}</code></li>
+                {%- endfor %}
+              </ul>
+              {%- endif %}
+            </td>
+            <td>{{ yesno(p.auditd_enabled) }}</td>
+            <td class="num">{{ p.audit_rule_count }}</td>
+            <td>{{ yesno(p.logrotate_present) }}</td>
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Enabled services and their logging capability</h2>
+    <div class="card">
+      <div class="filters">
+        <input type="search" id="svcSearch" placeholder="Filter by service, host, or sink&hellip;" aria-label="Filter services">
+        <select id="svcStatus" aria-label="Filter by logging status">
+          <option value="">All logging statuses</option>
+          <option value="good">Captured</option>
+          <option value="warning">Needs review</option>
+          <option value="critical">Not captured</option>
+        </select>
+        <select id="svcHost" aria-label="Filter by host">
+          <option value="">All hosts</option>
+          {%- for host in audit_report_hosts %}
+          <option value="{{ host.hostname }}">{{ host.hostname }}</option>
+          {%- endfor %}
+        </select>
+        <span class="count" id="svcCount"></span>
+      </div>
+      <div style="overflow-x: auto;">
+        <table id="svcTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-col="0">Host</th>
+              <th class="sortable" data-col="1">Service</th>
+              <th class="sortable" data-col="2">State</th>
+              <th class="sortable" data-col="3">Runs as</th>
+              <th class="sortable" data-col="4">Logging</th>
+              <th class="sortable" data-col="5">Destination</th>
+              <th>StandardOutput</th>
+              <th>StandardError</th>
+              <th>Assessment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {%- for host in audit_report_hosts %}
+            {%- for svc in host.services | sort(attribute='name') %}
+            <tr data-host="{{ host.hostname }}" data-status="{{ svc.log_status }}">
+              <td>{{ host.hostname }}</td>
+              <td class="svc" title="{{ svc.description }}">{{ svc.name }}</td>
+              <td>{{ svc.active_state }} / {{ svc.sub_state }}</td>
+              <td><code>{{ svc.run_as }}</code></td>
+              <td data-sort="{{ {'critical': 0, 'warning': 1, 'good': 2}[svc.log_status] }}">{{ status_pill(svc.log_status) }}</td>
+              <td><code>{{ svc.log_destination }}</code></td>
+              <td><code>{{ svc.std_output }}</code></td>
+              <td><code>{{ svc.std_error }}</code></td>
+              <td class="note">{{ svc.log_note }}</td>
+            </tr>
+            {%- endfor %}
+            {%- endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer class="report-foot">
+    Collected with Ansible Automation Platform from <code>systemctl list-unit-files --state=enabled</code>
+    and <code>systemctl show</code> on each host.
+    &ldquo;Captured&rdquo; means the unit's stdout reaches journald or syslog and its stderr is not discarded.
+    Per-host collection timestamps are in the accompanying CSV.
+  </footer>
+
+</div>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    document.getElementById('themeToggle').addEventListener('click', function () {
+      var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var current = root.getAttribute('data-theme') || (dark ? 'dark' : 'light');
+      root.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+    });
+
+    var table = document.getElementById('svcTable');
+    var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+    var search = document.getElementById('svcSearch');
+    var status = document.getElementById('svcStatus');
+    var host = document.getElementById('svcHost');
+    var count = document.getElementById('svcCount');
+
+    function apply() {
+      var q = search.value.toLowerCase();
+      var st = status.value;
+      var hs = host.value;
+      var shown = 0;
+      rows.forEach(function (row) {
+        var ok = (!st || row.dataset.status === st) &&
+                 (!hs || row.dataset.host === hs) &&
+                 (!q || row.textContent.toLowerCase().indexOf(q) !== -1);
+        row.hidden = !ok;
+        if (ok) { shown++; }
+      });
+      count.textContent = shown + ' of ' + rows.length + ' services';
+    }
+
+    [search, status, host].forEach(function (el) {
+      el.addEventListener('input', apply);
+    });
+    apply();
+
+    Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
+      if (!th.classList.contains('sortable')) { return; }
+      th.addEventListener('click', function () {
+        var col = +th.dataset.col;
+        var dir = th.dataset.dir === 'asc' ? 'desc' : 'asc';
+        Array.prototype.forEach.call(table.tHead.rows[0].cells, function (o) { delete o.dataset.dir; });
+        th.dataset.dir = dir;
+        var sorted = rows.slice().sort(function (a, b) {
+          var ca = a.cells[col], cb = b.cells[col];
+          var va = ca.dataset.sort !== undefined ? +ca.dataset.sort : ca.textContent.trim().toLowerCase();
+          var vb = cb.dataset.sort !== undefined ? +cb.dataset.sort : cb.textContent.trim().toLowerCase();
+          if (va < vb) { return dir === 'asc' ? -1 : 1; }
+          if (va > vb) { return dir === 'asc' ? 1 : -1; }
+          return 0;
+        });
+        var body = table.tBodies[0];
+        sorted.forEach(function (row) { body.appendChild(row); });
+      });
+    });
+  }());
+</script>
+</body>
+</html>
