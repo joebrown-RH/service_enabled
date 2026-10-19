@@ -1,7 +1,8 @@
 ---
 # systemd unit properties pulled for every enabled service.
-# Order matters: the parser batches `systemctl show` output by this length,
-# so keep additions at the end and never remove one without re-reading tasks/main.yml.
+# The COUNT matters: the parser batches `systemctl show` output by this length
+# to split it into one record per unit. The ORDER does not -- systemctl emits
+# properties in its own order, so records are keyed by name, not position.
 service_audit_unit_properties:
   - Id
   - Description

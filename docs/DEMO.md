@@ -5,7 +5,6 @@ A 20-minute customer demo. Times are a guide, not a script.
 ## Before the customer joins
 
 ```bash
-ansible-galaxy collection install -r collections/requirements.yml
 ansible-playbook playbooks/drift_baseline.yml          # approve current state
 ansible-playbook playbooks/sox_service_audit.yml       # warm run, check it is clean
 ```

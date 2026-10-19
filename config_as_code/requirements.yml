@@ -1,0 +1,13 @@
+---
+# Deliberately NOT at collections/requirements.yml, because AAP auto-installs
+# that path on every project sync -- and the playbooks need nothing beyond
+# ansible.builtin, so the project should sync as a plain git clone.
+#
+# Install these only where they are actually used:
+#   ansible-galaxy collection install -r config_as_code/requirements.yml
+collections:
+  # Applying the definitions in this directory to an AAP instance.
+  - name: infra.aap_configuration
+  # Running rulebooks/ locally with ansible-rulebook. An AAP decision
+  # environment already ships this.
+  - name: ansible.eda

@@ -51,7 +51,8 @@ inventory/                 Demo inventory; replace with your AAP inventory
 ## Quick start
 
 ```bash
-ansible-galaxy collection install -r collections/requirements.yml
+# No collections to install -- the playbooks use only ansible.builtin, so an
+# AAP project sync is a plain git clone with no Galaxy step.
 
 # Audit the control node itself -- the fastest way to see real output
 ansible-playbook playbooks/sox_service_audit.yml -e sox_hosts=local_demo -K

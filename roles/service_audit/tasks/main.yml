@@ -39,13 +39,15 @@
     quiet: true
   when: service_audit_enabled_units | length > 0
 
+# Each line becomes a [key, value] pair and each batch is one unit. Note that
+# systemctl does NOT echo the properties in the order they were requested, so
+# the keys must be carried through -- never zip values onto the request order.
 - name: Parse unit properties into records
   ansible.builtin.set_fact:
     service_audit_unit_records: >-
       {{ service_audit_show_output.stdout_lines | reject('equalto', '')
          | map('split', '=', 1)
          | batch(service_audit_unit_properties | length)
-         | map('community.general.dict')
          | list }}
   when: service_audit_enabled_units | length > 0
 
@@ -60,11 +62,15 @@
   ansible.builtin.set_fact:
     service_audit_services: "{{ service_audit_services | default([]) + [_record] }}"
   vars:
+    # Jinja's dict() global turns the [key, value] pairs back into a record, so
+    # the role needs no collection beyond ansible.builtin and an AAP project
+    # sync is a plain git clone with no Galaxy step.
+    _unit: "{{ dict(item) }}"
     # `inherit` on stdout falls back to the manager default; on stderr it mirrors stdout.
-    _out: "{{ item.StandardOutput if item.StandardOutput != 'inherit' else service_audit_default_stdout }}"
+    _out: "{{ _unit.StandardOutput if _unit.StandardOutput != 'inherit' else service_audit_default_stdout }}"
     _err: >-
-      {{ item.StandardError if item.StandardError not in ['inherit', '']
-         else (service_audit_default_stderr if item.StandardError == '' else _out) }}
+      {{ _unit.StandardError if _unit.StandardError not in ['inherit', '']
+         else (service_audit_default_stderr if _unit.StandardError == '' else _out) }}
     _to_file: "{{ _out is match('^(file|append|truncate):') }}"
     _out_discarded: "{{ _out in service_audit_discard_sinks }}"
     _err_discarded: "{{ _err in service_audit_discard_sinks }}"
@@ -88,26 +94,26 @@
          if not _out_durable
          else 'captured by ' ~ _destination))) }}
     _record:
-      name: "{{ item.Id }}"
-      description: "{{ item.Description }}"
-      unit_file_state: "{{ item.UnitFileState }}"
-      active_state: "{{ item.ActiveState }}"
-      sub_state: "{{ item.SubState }}"
-      run_as: "{{ item.User | default('root', true) | default('root', true) }}"
-      unit_path: "{{ item.FragmentPath }}"
-      std_output: "{{ item.StandardOutput }}"
-      std_error: "{{ item.StandardError }}"
+      name: "{{ _unit.Id }}"
+      description: "{{ _unit.Description }}"
+      unit_file_state: "{{ _unit.UnitFileState }}"
+      active_state: "{{ _unit.ActiveState }}"
+      sub_state: "{{ _unit.SubState }}"
+      run_as: "{{ _unit.User | default('root', true) }}"
+      unit_path: "{{ _unit.FragmentPath }}"
+      std_output: "{{ _unit.StandardOutput }}"
+      std_error: "{{ _unit.StandardError }}"
       effective_output: "{{ _out }}"
       effective_error: "{{ _err }}"
-      syslog_identifier: "{{ item.SyslogIdentifier | default('', true) }}"
-      syslog_facility: "{{ item.SyslogFacility | default('', true) }}"
+      syslog_identifier: "{{ _unit.SyslogIdentifier | default('', true) }}"
+      syslog_facility: "{{ _unit.SyslogFacility | default('', true) }}"
       log_destination: "{{ _destination }}"
       log_status: "{{ _status }}"
       log_note: "{{ _note }}"
-      audit_relevant: "{{ item.Id in service_audit_expected_services }}"
+      audit_relevant: "{{ _unit.Id in service_audit_expected_services }}"
   loop: "{{ service_audit_unit_records | default([]) }}"
   loop_control:
-    label: "{{ item.Id }}"
+    label: "{{ dict(item).Id }}"
 
 - name: Ensure the service list exists even on a host with no enabled services
   ansible.builtin.set_fact:

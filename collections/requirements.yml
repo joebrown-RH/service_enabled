@@ -1,6 +1,0 @@
----
-collections:
-  - name: ansible.posix
-  - name: community.general
-  - name: ansible.eda
-  - name: infra.aap_configuration
