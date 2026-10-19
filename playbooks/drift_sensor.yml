@@ -14,8 +14,15 @@
 
   vars:
     sox_baseline_path: /var/lib/sox_audit/baseline.json
-    # Set to the listening address of the config_drift_webhook.yml activation.
+    # On AAP 2.5+ this is the Event Stream URL shown in the EDA UI. On a plain
+    # ansible.eda.webhook source it is http://<host>:5000/endpoint.
     eda_webhook_url: ""
+    # Authentication for the Event Stream. Use one of these, not both.
+    eda_webhook_token: ""
+    eda_webhook_user: ""
+    eda_webhook_password: ""
+    eda_webhook_validate_certs: true
+    eda_webhook_no_log: true
 
   tasks:
     - name: Fingerprint the current state
@@ -73,8 +80,13 @@
                  ~ sox_drift.enabled_services_removed | length ~ ' no longer enabled'
                  if sox_has_drift | bool else 'matches baseline' }}
 
-        # Posting to the EDA webhook is the event ingress for a rulebook, not an
-        # AAP API call -- the rulebook decides what to do with it.
+        # Posting to the EDA endpoint is the event ingress for a rulebook, not
+        # an AAP API call -- the rulebook decides what to do with it.
+        #
+        # On AAP 2.5+ this is an Event Stream URL, which is authenticated. Set
+        # eda_webhook_token for a Token event stream, or the user/password pair
+        # for a Basic one. Leave all three unset for a plain ansible.eda.webhook
+        # source reachable directly.
         - name: Notify Event-Driven Ansible
           ansible.builtin.uri:
             url: "{{ eda_webhook_url }}"
@@ -83,9 +95,17 @@
             body:
               source: sox_drift_sensor
               drift: "{{ sox_drift }}"
-            status_code: [200, 202]
+            headers: "{{ {'Authorization': 'Bearer ' ~ eda_webhook_token} if eda_webhook_token | length > 0 else {} }}"
+            url_username: "{{ eda_webhook_user | default(omit) }}"
+            url_password: "{{ eda_webhook_password | default(omit) }}"
+            force_basic_auth: "{{ eda_webhook_user | length > 0 }}"
+            validate_certs: "{{ eda_webhook_validate_certs | bool }}"
+            status_code: [200, 202, 204]
           delegate_to: localhost
           become: false
+          # Hides the Authorization header. Set eda_webhook_no_log=false to see
+          # the full request and response while wiring up the Event Stream.
+          no_log: "{{ eda_webhook_no_log | bool }}"
           when:
             - sox_has_drift | bool
             - eda_webhook_url | length > 0
