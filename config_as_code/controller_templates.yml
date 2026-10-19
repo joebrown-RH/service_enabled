@@ -16,6 +16,12 @@ controller_templates:
     become_enabled: true
     ask_limit_on_launch: true
     ask_variables_on_launch: true
+    extra_vars:
+      # localhost writes the report inside the execution environment, which is
+      # destroyed when the job ends. Name a durable host from the inventory to
+      # keep the evidence; see "Where does the report land?" in the README.
+      sox_report_host: localhost
+      sox_report_become: false
 
   - name: "SOX - Capture Config Baseline"
     description: >-

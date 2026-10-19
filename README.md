@@ -159,14 +159,49 @@ Suggested demo flow in the UI: **Capture Config Baseline** -> **Collect Service
 & Logging Evidence** (show the report) -> break something -> **Drift Sensor** ->
 watch the activation fire **Drift Response**.
 
-### Getting the report out of AAP
+### Where does the report land?
 
-The report is written inside the execution environment, which is discarded when
-the job ends. For anything beyond a live demo, send it somewhere durable --
-point `sox_report_dir` at a mounted volume on a container group, add a task to
-push it to object storage or a web server, or email it from the final play.
-Plan for this before showing it to a customer who asks "so where does the PDF
-land?"
+**Running it yourself:** `./reports/` next to the playbook, on whatever machine
+you ran `ansible-playbook` from. Durable, nothing to configure.
+
+**Running it in AAP, out of the box:** inside the execution environment
+container, typically `/runner/project/reports/`. That container is destroyed the
+moment the job finishes, so the report is gone. Good enough to screen-share
+during a demo; useless as an audit artefact.
+
+**The fix** is one variable. Name a durable host from your inventory and the
+evidence is written there instead:
+
+```yaml
+sox_report_host: evidence.example.com      # a file server, web host, anything
+sox_report_dir: /var/www/html/sox-evidence # absolute path on that host
+sox_report_become: true                    # if that path needs root
+```
+
+Or at launch time:
+
+```bash
+-e sox_report_host=evidence.example.com -e sox_report_dir=/srv/sox -e sox_report_become=true
+```
+
+`sox_report_dir` defaults to the repo-relative `reports/` for `localhost` and to
+`/var/lib/sox_audit/reports` for any other host, so a remote target still works
+if you only set `sox_report_host`. Each run writes a timestamped pair plus a
+stable `*_latest.html` / `*_latest.csv` that a dashboard or a scheduled fetch can
+point at. The same variables control where `drift_register.csv` accumulates.
+
+Other options, depending on where the customer wants evidence to live:
+
+| Destination | How |
+|---|---|
+| **A durable host** (simplest, recommended) | `sox_report_host`, as above |
+| **Persistent volume** | Run the job on an OpenShift container group with a PVC mounted, and point `sox_report_dir` at the mount |
+| **Object storage / SharePoint** | Add a push task after the render; `amazon.aws.s3_object` or a `uri` POST |
+| **Email to the audit team** | `community.general.mail` with the HTML attached, in a final play |
+
+Decide this before the demo. "So where does the report actually land?" is the
+first question a customer engineer asks, and "inside a container that no longer
+exists" is a bad answer to improvise.
 
 ---
 

@@ -104,9 +104,11 @@ The audit is read-only. `drift_baseline.yml` writes to `/var/lib/sox_audit/` on
 each host, and nothing else writes anywhere.
 
 **"Where does the report actually land?"**
-Inside the execution environment, which is ephemeral. For production, point
-`sox_report_dir` at a mounted volume or add a task to ship it. Say this before
-they ask it -- it lands better.
+By default, inside the execution environment, which is destroyed when the job
+ends -- fine for this demo, useless as an artefact. Set `sox_report_host` to a
+durable host in their inventory and it writes there instead, with a stable
+`*_latest.html` to point a dashboard at. Say this before they ask it; it lands
+much better as a design decision than as a gap you got caught on.
 
 **"Can it fix the problems it finds?"**
 Yes, but deliberately not by default. See the close above.

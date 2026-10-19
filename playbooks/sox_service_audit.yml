@@ -21,9 +21,11 @@
 
   tasks:
     # Delegated rather than run in a `hosts: localhost` play so that an AAP job
-    # template using a limit still produces a report.
-    - name: Build the HTML and CSV report on the control node
+    # template using a limit still produces a report. Point sox_report_host at a
+    # durable host to write the evidence somewhere that outlives the job.
+    - name: Build the HTML and CSV report
       ansible.builtin.include_role:
         name: audit_report
         apply:
-          delegate_to: localhost
+          delegate_to: "{{ sox_report_host | default('localhost') }}"
+          become: "{{ sox_report_become | default(false) }}"

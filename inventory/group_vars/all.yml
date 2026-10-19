@@ -1,8 +1,21 @@
 ---
-# Where generated HTML/CSV evidence is written on the control node
-# (in AAP this is inside the execution environment -- see README "Retrieving
-# the report from AAP" for how to ship it somewhere durable).
-sox_report_dir: "{{ playbook_dir }}/../reports"
+# Which host the evidence is written to.
+#
+# `localhost` means the machine running the playbook. Under AAP that is the
+# execution environment container, which is destroyed when the job ends -- fine
+# for a live demo, useless as an audit artefact. For anything that has to
+# survive, name a durable host from your inventory (a file server, a web host)
+# and the report is written there instead.
+sox_report_host: localhost
+
+# Set `true` if writing to sox_report_dir on sox_report_host needs root.
+sox_report_become: false
+
+# Where the HTML and CSV land on sox_report_host. The repo-relative default only
+# makes sense for localhost; a remote report host needs an absolute path.
+sox_report_dir: >-
+  {{ (playbook_dir ~ '/../reports') if sox_report_host == 'localhost'
+     else '/var/lib/sox_audit/reports' }}
 
 # Shown in the report header so an auditor knows what they are looking at.
 sox_report_title: "SOX Evidence - Linux Enabled Services & Logging Posture"

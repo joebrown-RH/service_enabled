@@ -85,8 +85,8 @@
       when: drift_files | length > 0
 
     - name: Record the event in the drift register
-      delegate_to: localhost
-      become: false
+      delegate_to: "{{ sox_report_host | default('localhost') }}"
+      become: "{{ sox_report_become | default(false) }}"
       block:
         - name: Ensure the register exists with a header
           ansible.builtin.lineinfile:
