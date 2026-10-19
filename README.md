@@ -151,6 +151,10 @@ write a file several times per save and an unthrottled demo turns into a storm.
 
 ## Running it in AAP
 
+Step-by-step setup, including the Event-Driven Ansible half, is in
+[docs/AAP-SETUP.md](docs/AAP-SETUP.md).
+
+
 `config_as_code/` defines the project, four job templates, a (disabled) schedule
 for the sensor, and the EDA activation, in the `infra.aap_configuration` format.
 Edit `config_as_code/vars.yml` to match your instance first -- organization,
