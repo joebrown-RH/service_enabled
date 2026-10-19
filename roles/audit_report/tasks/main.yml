@@ -40,11 +40,21 @@
   ansible.builtin.set_fact:
     audit_report_stamp: "{{ now(true, '%Y%m%dT%H%M%SZ') }}"
 
-- name: Ensure the report directory exists
+- name: Check whether the report directory already exists
+  ansible.builtin.stat:
+    path: "{{ audit_report_dir }}"
+  register: audit_report_dir_stat
+
+# Created only when missing. An existing directory is left exactly as it is:
+# the target is often a web root owned by another role (the product-demos
+# report server, for instance), and asserting a mode on a directory we do not
+# own fails with EPERM even though we only ever need to write files into it.
+- name: Create the report directory
   ansible.builtin.file:
     path: "{{ audit_report_dir }}"
     state: directory
     mode: "0755"
+  when: not audit_report_dir_stat.stat.exists
 
 - name: Render the report
   ansible.builtin.template:
