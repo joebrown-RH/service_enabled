@@ -1,0 +1,20 @@
+---
+# ansible.builtin.service_facts replaces `systemctl list-unit-files`. It returns
+# a dict keyed by unit name, each entry carrying name, state, status and source.
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Select the systemd services that are enabled
+  ansible.builtin.set_fact:
+    # Template units (foo@.service) describe a family rather than a running
+    # service and carry no resolvable configuration, so they are excluded --
+    # the same exclusion the command-based role applies.
+    service_audit_native_enabled_units: >-
+      {{ ansible_facts.services | dict2items
+         | selectattr('value.source', 'equalto', 'systemd')
+         | selectattr('value.status', 'equalto', 'enabled')
+         | map(attribute='value.name')
+         | select('search', '\.service$')
+         | reject('search', '@\.service$')
+         | sort | list }}

@@ -1,0 +1,78 @@
+---
+# Native mirror of the service_audit role: same output contract (`sox_audit`),
+# no command or shell tasks. See README.md in this role for the behavioural
+# differences this forces.
+
+# Unit file search path, highest precedence first. The first directory that
+# contains a given unit file wins. This follows the ordering in systemd.unit(5),
+# including the generator directories so that generated units (fstab mounts,
+# SysV compatibility) resolve rather than coming back empty.
+service_audit_native_unit_paths:
+  - /etc/systemd/system
+  - /run/systemd/generator.early
+  - /run/systemd/system
+  - /run/systemd/generator
+  - /usr/lib/systemd/system
+  - /lib/systemd/system
+  - /run/systemd/generator.late
+
+# Where the manager's own defaults are declared.
+service_audit_native_manager_config: /etc/systemd/system.conf
+
+# systemd's compiled-in defaults, used when nothing declares otherwise.
+service_audit_native_default_stdout: journal
+service_audit_native_default_stderr: inherit
+
+# Reading Description means slurping every enabled unit file -- one round trip
+# each. Set false on a large fleet to skip it and fall back to the unit name.
+service_audit_native_read_descriptions: true
+
+# service_facts reports a single coarse `state`; map it back to systemd's own
+# ActiveState/SubState vocabulary so the report reads the same either way.
+# See README.md -- this mapping cannot recover active(exited) for oneshot units
+# with RemainAfterExit, which service_facts reports as stopped.
+service_audit_native_state_map:
+  running: {active: active, sub: running}
+  active: {active: active, sub: running}
+  exited: {active: active, sub: exited}
+  stopped: {active: inactive, sub: dead}
+  inactive: {active: inactive, sub: dead}
+  failed: {active: failed, sub: failed}
+  unknown: {active: unknown, sub: unknown}
+
+# Services an auditor specifically expects to find enabled on an in-scope host.
+service_audit_native_expected_services:
+  - auditd.service
+  - rsyslog.service
+  - sshd.service
+  - chronyd.service
+
+# StandardOutput/StandardError values that mean "this output is discarded".
+service_audit_native_discard_sinks:
+  - "null"
+
+# Values that mean output reaches a durable, centrally-collectable log.
+service_audit_native_durable_sinks:
+  - journal
+  - "journal+console"
+  - syslog
+  - "syslog+console"
+  - kmsg
+  - "kmsg+console"
+
+# Host-level logging configuration read during the posture check.
+service_audit_native_journald_config: /etc/systemd/journald.conf
+service_audit_native_journald_dropin_dir: /etc/systemd/journald.conf.d
+service_audit_native_rsyslog_config: /etc/rsyslog.conf
+service_audit_native_rsyslog_dropin_dir: /etc/rsyslog.d
+service_audit_native_audit_rules_dir: /etc/audit/rules.d
+
+# Files whose content is fingerprinted for the config-drift baseline.
+service_audit_native_watched_files:
+  - /etc/ssh/sshd_config
+  - /etc/systemd/journald.conf
+  - /etc/rsyslog.conf
+  - /etc/audit/auditd.conf
+  - /etc/audit/rules.d/audit.rules
+  - /etc/login.defs
+  - /etc/sudoers

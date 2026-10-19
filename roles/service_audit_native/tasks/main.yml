@@ -1,0 +1,135 @@
+---
+- name: Confirm the host is systemd-managed
+  ansible.builtin.assert:
+    that: ansible_facts.service_mgr == 'systemd'
+    fail_msg: "{{ inventory_hostname }} is not systemd-managed; this audit only supports systemd hosts."
+    quiet: true
+
+- name: Determine which services are enabled
+  ansible.builtin.include_tasks: enabled_units.yml
+
+- name: Locate the systemd manager configuration
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_manager_config | dirname }}"
+    patterns: "{{ service_audit_native_manager_config | basename }}"
+    file_type: any
+  register: service_audit_native_manager_search
+
+- name: Read the systemd manager configuration
+  ansible.builtin.slurp:
+    src: "{{ service_audit_native_manager_config }}"
+  register: service_audit_native_manager_raw
+  when: service_audit_native_manager_search.files | length > 0
+  failed_when: false
+
+- name: Resolve the manager default sinks
+  ansible.builtin.set_fact:
+    service_audit_native_manager_stdout: >-
+      {{ _text | regex_findall('(?im)^[ \t]*DefaultStandardOutput[ \t]*=[ \t]*(\S+)')
+         | last | default(service_audit_native_default_stdout, true) }}
+    service_audit_native_manager_stderr: >-
+      {{ _text | regex_findall('(?im)^[ \t]*DefaultStandardError[ \t]*=[ \t]*(\S+)')
+         | last | default(service_audit_native_default_stderr, true) }}
+  vars:
+    _text: "{{ service_audit_native_manager_raw.content | default('') | b64decode }}"
+
+- name: Read the unit properties for every enabled service
+  ansible.builtin.include_tasks: unit_properties.yml
+
+- name: Classify the logging capability of each enabled service
+  ansible.builtin.set_fact:
+    service_audit_native_services: "{{ service_audit_native_services | default([]) + [_record] }}"
+  vars:
+    _unit: "{{ service_audit_native_unit_props[item] }}"
+    _svc_state: "{{ ansible_facts.services[item].state | default('unknown') }}"
+    _mapped_state: >-
+      {{ service_audit_native_state_map[_svc_state]
+         | default(service_audit_native_state_map.unknown) }}
+    # A unit file that declares nothing inherits the manager default, which is
+    # what `systemctl show` would have reported, so record that as the value.
+    _declared_out: "{{ _unit.StandardOutput }}"
+    _declared_err: "{{ _unit.StandardError }}"
+    _std_out: "{{ _declared_out if _declared_out else service_audit_native_manager_stdout }}"
+    _std_err: "{{ _declared_err if _declared_err else service_audit_native_manager_stderr }}"
+    # `inherit` on stdout falls back to the manager default; on stderr it mirrors stdout.
+    _out: "{{ _std_out if _std_out != 'inherit' else service_audit_native_manager_stdout }}"
+    _err: >-
+      {{ _std_err if _std_err not in ['inherit', '']
+         else (service_audit_native_manager_stderr if _std_err == '' else _out) }}
+    _to_file: "{{ _out is match('^(file|append|truncate):') }}"
+    _out_discarded: "{{ _out in service_audit_native_discard_sinks }}"
+    _err_discarded: "{{ _err in service_audit_native_discard_sinks }}"
+    _out_durable: "{{ _out in service_audit_native_durable_sinks }}"
+    _destination: >-
+      {{ 'file' if _to_file
+         else ('none' if _out_discarded
+         else (_out | split('+') | first)) }}
+    _status: >-
+      {{ 'critical' if _out_discarded
+         else ('warning' if (_to_file or _err_discarded or not _out_durable)
+         else 'good') }}
+    _note: >-
+      {{ 'stdout and stderr are discarded (StandardOutput=null) - this service produces no log evidence'
+         if _out_discarded
+         else ('writes to a file outside the journal (' ~ _out ~ ') - confirm rotation and central collection'
+         if _to_file
+         else ('stderr is discarded (StandardError=null); only stdout is captured'
+         if _err_discarded
+         else ('output goes to ' ~ _out ~ ', which is not a durable log sink'
+         if not _out_durable
+         else 'captured by ' ~ _destination))) }}
+    _record:
+      name: "{{ item }}"
+      description: "{{ _unit.Description }}"
+      unit_file_state: enabled
+      active_state: "{{ _mapped_state.active }}"
+      sub_state: "{{ _mapped_state.sub }}"
+      run_as: "{{ _unit.User | default('root', true) }}"
+      unit_path: "{{ _unit.FragmentPath }}"
+      std_output: "{{ _std_out }}"
+      std_error: "{{ _std_err }}"
+      effective_output: "{{ _out }}"
+      effective_error: "{{ _err }}"
+      syslog_identifier: "{{ _unit.SyslogIdentifier }}"
+      syslog_facility: "{{ _unit.SyslogFacility }}"
+      log_destination: "{{ _destination }}"
+      log_status: "{{ _status }}"
+      log_note: "{{ _note }}"
+      audit_relevant: "{{ item in service_audit_native_expected_services }}"
+  loop: "{{ service_audit_native_enabled_units }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Ensure the service list exists even on a host with no enabled services
+  ansible.builtin.set_fact:
+    service_audit_native_services: "{{ service_audit_native_services | default([]) }}"
+
+- name: Collect the host logging posture
+  ansible.builtin.include_tasks: logging_posture.yml
+
+# noqa var-naming: sox_audit is the published output contract shared with the
+# command-based role, so the audit_report role consumes either unchanged.
+- name: Assemble the audit record for this host # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    sox_audit:
+      hostname: "{{ inventory_hostname }}"
+      fqdn: "{{ ansible_facts.fqdn | default(inventory_hostname) }}"
+      distribution: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+      kernel: "{{ ansible_facts.kernel }}"
+      collected_at: "{{ now(true, '%Y-%m-%dT%H:%M:%SZ') }}"
+      services: "{{ service_audit_native_services }}"
+      posture: "{{ service_audit_native_posture }}"
+      totals:
+        enabled: "{{ service_audit_native_services | length }}"
+        good: "{{ service_audit_native_services | selectattr('log_status', 'equalto', 'good') | list | length }}"
+        warning: "{{ service_audit_native_services | selectattr('log_status', 'equalto', 'warning') | list | length }}"
+        critical: "{{ service_audit_native_services | selectattr('log_status', 'equalto', 'critical') | list | length }}"
+      findings: "{{ service_audit_native_findings }}"
+
+- name: Summarise the audit for this host
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ sox_audit.totals.enabled }} enabled services,
+      {{ sox_audit.totals.critical }} with no log capture,
+      {{ sox_audit.totals.warning }} needing review,
+      {{ sox_audit.findings | length }} host-level finding(s).

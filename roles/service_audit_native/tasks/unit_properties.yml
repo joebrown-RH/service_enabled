@@ -1,0 +1,113 @@
+---
+# Replaces `systemctl show` by resolving each enabled service to the unit file
+# systemd would use, layering its drop-ins on top, and reading the directives.
+
+- name: Locate candidate unit files
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_unit_paths }}"
+    patterns: "*.service"
+    file_type: any
+  register: service_audit_native_unit_search
+
+- name: Locate unit drop-in overrides
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_unit_paths }}"
+    patterns: "*.conf"
+    file_type: any
+    recurse: true
+    depth: 2
+  register: service_audit_native_dropin_search
+
+- name: Identify unit files that declare output directives
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_unit_paths }}"
+    patterns: "*.service"
+    file_type: any
+    contains: '^[ \t]*Standard(Output|Error)[ \t]*='
+  register: service_audit_native_declaring_search
+
+- name: Index the discovered paths
+  ansible.builtin.set_fact:
+    service_audit_native_found_paths: "{{ service_audit_native_unit_search.files | map(attribute='path') | list }}"
+    service_audit_native_dropin_paths: "{{ service_audit_native_dropin_search.files | map(attribute='path') | list }}"
+    service_audit_native_declaring_paths: "{{ service_audit_native_declaring_search.files | map(attribute='path') | list }}"
+
+# First directory in service_audit_native_unit_paths that holds the unit wins,
+# mirroring systemd's /etc > /run > /usr/lib precedence.
+- name: Resolve each enabled service to its highest-precedence unit file
+  ansible.builtin.set_fact:
+    service_audit_native_unit_file: >-
+      {{ service_audit_native_unit_file | default({}) | combine({item: _resolved}) }}
+  vars:
+    _candidates: "{{ service_audit_native_unit_paths | product([item]) | map('join', '/') | list }}"
+    _resolved: >-
+      {{ (_candidates | select('in', service_audit_native_found_paths) | list | first) | default('', true) }}
+  loop: "{{ service_audit_native_enabled_units }}"
+  loop_control:
+    label: "{{ item }}"
+
+# One slurp per unit file. Skipping descriptions reduces this to only the few
+# units that actually declare an output directive.
+- name: Read the effective unit files
+  ansible.builtin.slurp:
+    src: "{{ item.value }}"
+  loop: "{{ service_audit_native_unit_file | dict2items | rejectattr('value', 'equalto', '') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: >-
+    service_audit_native_read_descriptions | bool
+    or item.value in service_audit_native_declaring_paths
+  register: service_audit_native_unit_contents
+
+- name: Read drop-in overrides belonging to enabled services
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: "{{ service_audit_native_dropin_paths | select('search', _owned_by_enabled) | list }}"
+  vars:
+    _owned_by_enabled: >-
+      /({{ service_audit_native_enabled_units | map('regex_escape') | join('|') }})\.d/
+  register: service_audit_native_dropin_contents
+
+- name: Parse the effective directives for each service
+  ansible.builtin.set_fact:
+    service_audit_native_unit_props: >-
+      {{ service_audit_native_unit_props | default({}) | combine({item: _props}) }}
+  vars:
+    _nl: "\n"
+    _main: >-
+      {{ (service_audit_native_unit_contents.results
+          | rejectattr('skipped', 'defined')
+          | selectattr('item.key', 'equalto', item)
+          | map(attribute='content') | map('b64decode') | list | first) | default('', true) }}
+    # Drop-ins are appended after the unit file so that, with 'last match wins'
+    # parsing below, they override it exactly as systemd would.
+    _drops: >-
+      {{ service_audit_native_dropin_contents.results | default([])
+         | rejectattr('skipped', 'defined')
+         | selectattr('item', 'search', '/' ~ (item | regex_escape) ~ '\.d/')
+         | map(attribute='content') | map('b64decode') | list }}
+    _text: "{{ ([_main] + _drops) | join(_nl) }}"
+    _props:
+      Id: "{{ item }}"
+      FragmentPath: "{{ service_audit_native_unit_file[item] }}"
+      Description: >-
+        {{ _text | regex_findall('(?im)^[ \t]*Description[ \t]*=[ \t]*(.*)$')
+           | last | default(item, true) | trim }}
+      StandardOutput: >-
+        {{ _text | regex_findall('(?im)^[ \t]*StandardOutput[ \t]*=[ \t]*(\S*)')
+           | last | default('', true) }}
+      StandardError: >-
+        {{ _text | regex_findall('(?im)^[ \t]*StandardError[ \t]*=[ \t]*(\S*)')
+           | last | default('', true) }}
+      SyslogIdentifier: >-
+        {{ _text | regex_findall('(?im)^[ \t]*SyslogIdentifier[ \t]*=[ \t]*(\S*)')
+           | last | default('', true) }}
+      SyslogFacility: >-
+        {{ _text | regex_findall('(?im)^[ \t]*SyslogFacility[ \t]*=[ \t]*(\S*)')
+           | last | default('', true) }}
+      User: >-
+        {{ _text | regex_findall('(?im)^[ \t]*User[ \t]*=[ \t]*(\S*)')
+           | last | default('root', true) }}
+  loop: "{{ service_audit_native_enabled_units }}"
+  loop_control:
+    label: "{{ item }}"

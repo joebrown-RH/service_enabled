@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: service_audit_native
+  author: Joe Brown II
+  description: >-
+    Native-module mirror of the service_audit role. Produces the same sox_audit
+    contract using service_facts, find, slurp and stat, with no command or
+    shell tasks.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+        - "10"
+  galaxy_tags:
+    - sox
+    - compliance
+    - systemd
+    - logging
+dependencies: []

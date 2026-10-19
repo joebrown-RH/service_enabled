@@ -1,0 +1,29 @@
+---
+# Same evidence pack as sox_service_audit.yml, collected with native modules
+# only -- no command or shell tasks. The audit_report role is shared, because
+# both roles publish the identical `sox_audit` contract.
+#
+#   ansible-playbook playbooks/sox_service_audit_native.yml
+#   ansible-playbook playbooks/sox_service_audit_native.yml -e sox_hosts=local_demo
+
+- name: Collect SOX evidence from in-scope Linux hosts (native modules)
+  hosts: "{{ sox_hosts | default('sox_targets') }}"
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: service_audit_native
+
+- name: Render the SOX evidence report
+  hosts: "{{ sox_hosts | default('sox_targets') }}"
+  gather_facts: false
+  become: false
+  run_once: true
+
+  tasks:
+    - name: Build the HTML and CSV report
+      ansible.builtin.include_role:
+        name: audit_report
+        apply:
+          delegate_to: "{{ sox_report_host | default('localhost') }}"
+          become: "{{ sox_report_become | default(false) }}"

@@ -1,0 +1,134 @@
+---
+# Host-level logging capability, read from configuration files rather than from
+# `systemd-analyze`, `grep` and `auditctl`.
+
+- name: Locate the journald configuration
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_journald_config | dirname }}"
+    patterns: "{{ service_audit_native_journald_config | basename }}"
+    file_type: any
+  register: service_audit_native_journald_main
+
+- name: Locate journald drop-ins
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_journald_dropin_dir }}"
+    patterns: "*.conf"
+    file_type: any
+  register: service_audit_native_journald_drops
+
+- name: Locate the rsyslog configuration
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_rsyslog_config | dirname }}"
+    patterns: "{{ service_audit_native_rsyslog_config | basename }}"
+    file_type: any
+  register: service_audit_native_rsyslog_main
+
+- name: Locate rsyslog drop-ins
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_rsyslog_dropin_dir }}"
+    patterns: "*.conf"
+    file_type: any
+  register: service_audit_native_rsyslog_drops
+
+- name: Locate the audit rule files
+  ansible.builtin.find:
+    paths: "{{ service_audit_native_audit_rules_dir }}"
+    patterns: "*.rules"
+    file_type: any
+  register: service_audit_native_audit_rule_files
+
+- name: Read the logging configuration files
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: >-
+    {{ (service_audit_native_journald_main.files | map(attribute='path') | list)
+       + (service_audit_native_journald_drops.files | map(attribute='path') | sort)
+       + (service_audit_native_rsyslog_main.files | map(attribute='path') | list)
+       + (service_audit_native_rsyslog_drops.files | map(attribute='path') | sort)
+       + (service_audit_native_audit_rule_files.files | map(attribute='path') | sort) }}
+  register: service_audit_native_config_contents
+  failed_when: false
+
+- name: Check whether the journal is stored persistently on disk
+  ansible.builtin.stat:
+    path: /var/log/journal
+  register: service_audit_native_journal_dir
+
+- name: Check for logrotate
+  ansible.builtin.stat:
+    path: /etc/logrotate.conf
+  register: service_audit_native_logrotate_conf
+
+- name: Record the host logging posture
+  ansible.builtin.set_fact:
+    service_audit_native_posture:
+      journald_storage: >-
+        {{ _journald_text | regex_findall('(?im)^[ \t]*Storage[ \t]*=[ \t]*(\S+)')
+           | last | default('auto (compiled-in default)', true) }}
+      journald_persistent: "{{ service_audit_native_journal_dir.stat.isdir | default(false) }}"
+      journald_retention: >-
+        {{ _journald_text | regex_findall('(?im)^[ \t]*MaxRetentionSec[ \t]*=[ \t]*(\S+)')
+           | last | default('not set', true) }}
+      journald_max_use: >-
+        {{ _journald_text | regex_findall('(?im)^[ \t]*SystemMaxUse[ \t]*=[ \t]*(\S+)')
+           | last | default('not set', true) }}
+      journald_forward_to_syslog: >-
+        {{ _journald_text | regex_findall('(?im)^[ \t]*ForwardToSyslog[ \t]*=[ \t]*(\S+)')
+           | last | default('not set', true) }}
+      rsyslog_enabled: "{{ 'rsyslog.service' in service_audit_native_enabled_units }}"
+      remote_forwarding: "{{ _forwarding | length > 0 }}"
+      remote_forwarding_evidence: "{{ _forwarding | map('trim') | list }}"
+      auditd_enabled: "{{ 'auditd.service' in service_audit_native_enabled_units }}"
+      audit_rule_count: "{{ _audit_rules | length }}"
+      logrotate_present: "{{ service_audit_native_logrotate_conf.stat.exists }}"
+  vars:
+    _nl: "\n"
+    _decoded: >-
+      {{ service_audit_native_config_contents.results
+         | rejectattr('content', 'undefined')
+         | items2dict(key_name='item', value_name='content') }}
+    _journald_paths: >-
+      {{ (service_audit_native_journald_main.files | map(attribute='path') | list)
+         + (service_audit_native_journald_drops.files | map(attribute='path') | sort) }}
+    _rsyslog_paths: >-
+      {{ (service_audit_native_rsyslog_main.files | map(attribute='path') | list)
+         + (service_audit_native_rsyslog_drops.files | map(attribute='path') | sort) }}
+    _audit_paths: "{{ service_audit_native_audit_rule_files.files | map(attribute='path') | sort }}"
+    _journald_text: >-
+      {{ _journald_paths | select('in', _decoded) | map('extract', _decoded)
+         | map('b64decode') | join(_nl) }}
+    _rsyslog_text: >-
+      {{ _rsyslog_paths | select('in', _decoded) | map('extract', _decoded)
+         | map('b64decode') | join(_nl) }}
+    _audit_text: >-
+      {{ _audit_paths | select('in', _decoded) | map('extract', _decoded)
+         | map('b64decode') | join(_nl) }}
+    # Uncommented lines naming a remote target (@host, @@host) or the omfwd
+    # output module. Carried into the report verbatim as evidence.
+    _forwarding: >-
+      {{ _rsyslog_text
+         | regex_findall('(?m)^[ \t]*[^#\s][^\n]*(?:@@?[A-Za-z0-9._-]+|omfwd)[^\n]*$') }}
+    _audit_rules: >-
+      {{ _audit_text | regex_findall('(?m)^[ \t]*-[^\n]*$') }}
+
+# Each finding is phrased as the control gap an auditor would write up.
+- name: Derive the host-level findings
+  ansible.builtin.set_fact:
+    service_audit_native_findings: >-
+      {{ (_missing_expected | map('regex_replace', '^(.*)$', 'Expected service \1 is not enabled') | list)
+         + _posture_findings }}
+  vars:
+    _missing_expected: >-
+      {{ service_audit_native_expected_services
+         | difference(service_audit_native_enabled_units) }}
+    _posture_findings: >-
+      {{ ([] if service_audit_native_posture.journald_persistent
+            else ['Journal storage is not persistent (/var/log/journal is absent), so logs are lost on reboot'])
+         + ([] if service_audit_native_posture.remote_forwarding
+            else ['No remote log forwarding is configured, so logs are not protected from local tampering'])
+         + ([] if service_audit_native_posture.audit_rule_count | int > 0
+            else ['No auditd rules are configured, so privileged activity is not being recorded'])
+         + ([] if service_audit_native_posture.logrotate_present
+            else ['logrotate is not configured, so log retention is unmanaged'])
+         + ([] if service_audit_native_posture.journald_retention != 'not set'
+            else ['journald MaxRetentionSec is not set, so no explicit retention period is enforced']) }}

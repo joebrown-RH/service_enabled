@@ -38,6 +38,7 @@ playbooks/
   drift_response.yml       What EDA runs when a host drifts
 roles/
   service_audit/           Collection and assessment logic
+  service_audit_native/    Same evidence, native modules only (no command/shell)
   audit_report/            HTML + CSV rendering
 rulebooks/
   config_drift_webhook.yml Fleet-wide drift via the sensor (use this in AAP)
@@ -96,6 +97,23 @@ The collection is deliberately cheap: one `systemctl show` call per host covers
 every enabled unit, rather than one call per service.
 
 ---
+
+## Collecting without the command module
+
+`roles/service_audit_native/` gathers the same evidence using only native
+modules — `service_facts`, `find`, `slurp`, `stat` — with no `command` or
+`shell` tasks, and publishes the identical `sox_audit` contract so the report
+role renders either one unchanged:
+
+```bash
+ansible-playbook playbooks/sox_service_audit_native.yml
+```
+
+Run side by side against the same host it finds the same 53 services, with 48
+of 53 rows byte-identical and every logging-classification field matching. The
+differences, and why they exist, are documented in that role's README — the
+notable one being that `service_facts` cannot distinguish `active (exited)`
+for `oneshot` services.
 
 ## The config drift demo
 

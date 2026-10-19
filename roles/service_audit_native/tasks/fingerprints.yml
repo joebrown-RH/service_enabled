@@ -1,0 +1,42 @@
+---
+# Drift fingerprint. Already command-free in the original role; reproduced here
+# so the native role is self-contained.
+
+- name: Determine which services are enabled
+  ansible.builtin.include_tasks: enabled_units.yml
+
+# Tolerant on purpose: one unreadable path should downgrade that entry, not
+# abort the audit of the whole host.
+- name: Fingerprint the watched configuration files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+    get_checksum: true
+  loop: "{{ service_audit_native_watched_files }}"
+  register: service_audit_native_watched_stats
+  failed_when: false
+
+- name: Reduce each watched file to a single comparable value
+  ansible.builtin.set_fact:
+    service_audit_native_file_fingerprints: >-
+      {{ service_audit_native_file_fingerprints | default({}) | combine({item.item: _value}) }}
+  vars:
+    # 'absent' and 'unreadable' are distinct states: a file appearing is drift,
+    # whereas a file we could not read is a gap in the evidence, not a change.
+    _value: >-
+      {{ 'unreadable' if item.stat is not defined
+         else ('absent' if not item.stat.exists
+         else item.stat.checksum | default('unreadable', true)) }}
+  loop: "{{ service_audit_native_watched_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# noqa var-naming: sox_fingerprint is the published output contract shared with
+# the command-based role, so the drift playbooks consume either unchanged.
+- name: Assemble the drift fingerprint # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    sox_fingerprint:
+      hostname: "{{ inventory_hostname }}"
+      captured_at: "{{ now(true, '%Y-%m-%dT%H:%M:%SZ') }}"
+      enabled_services: "{{ service_audit_native_enabled_units | sort }}"
+      files: "{{ service_audit_native_file_fingerprints | default({}) }}"
